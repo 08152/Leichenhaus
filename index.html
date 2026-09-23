@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>Leichenhaus 3D</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050505;font-family:Arial}
+canvas{display:block}
+
+#crosshair{
+ position:fixed;
+ left:50%;top:50%;
+ width:14px;height:14px;
+ transform:translate(-50%,-50%);
+ pointer-events:none;
+ z-index:20;
+}
+#crosshair:before,#crosshair:after{
+ content:"";position:absolute;background:white;
+}
+#crosshair:before{width:14px;height:2px;left:0;top:6px}
+#crosshair:after{height:14px;width:2px;left:6px;top:0}
+
+#interact{
+ position:fixed;
+ left:50%;top:55%;
+ transform:translateX(-50%);
+ color:white;
+ background:#000b;
+ padding:7px 12px;
+ border-radius:5px;
+ font-size:14px;
+ display:none;
+ z-index:20;
+}
+
+#progress{
+ position:fixed;
+ left:50%;top:calc(50% + 35px);
+ transform:translateX(-50%);
+ width:70px;height:70px;
+ border-radius:50%;
+ display:none;
+ z-index:30;
+}
+#progress .outer{
+ position:absolute;
+ inset:0;
+ border:5px solid #555;
+ border-radius:50%;
+}
+#progress .fill{
+ position:absolute;
+ inset:0;
+ border-radius:50%;
+ background:conic-gradient(red 0deg,red 0deg,transparent 0deg);
+}
+#progress .inner{
+ position:absolute;
+ inset:7px;
+ background:#090909;
+ border-radius:50%;
+}
+#progress span{
+ position:absolute;
+ inset:0;
+ display:flex;
+ align-items:center;
+ justify-content:center;
+ color:white;
+ font-size:13px;
+ z-index:2;
+}
+
+#start{
+ position:fixed;
+ inset:0;
+ z-index:100;
+ background:radial-gradient(circle,#202020,#030303 70%);
+ color:white;
+ display:flex;
+ justify-content:center;
+ align-items:center;
+ text-align:center;
+ cursor:pointer;
+}
+#start h1{
+ font-size:42px;
+ font-weight:400;
+ letter-spacing:7px;
+ margin:0 0 15px;
+}
+#start p{color:#aaa}
+#info{
+ position:fixed;
+ bottom:12px;
+ left:12px;
+ color:#777;
+ font-size:11px;
+ z-index:20;
+ pointer-events:none;
+}
+</style>
+</head>
+
+<body>
+
+<div id="start">
+ <div>
+  <h1>LEICHENHAUS</h1>
+  <p>Klicken zum Betreten</p>
+  <p style="font-size:12px">WASD · Maus · E</p>
+ </div>
+</div>
+
+<div id="crosshair"></div>
+<div id="interact"></div>
+
+<div id="progress">
+ <div class="fill"></div>
+ <div class="outer"></div>
+ <div class="inner"></div>
+ <span>0%</span>
+</div>
+
+<div id="info">WASD · Maus · E</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+<script>
+"use strict";
+
+/* =========================================================
+   SZENE
+========================================================= */
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050607);
+scene.fog = new THREE.Fog(0x050607,18,42);
+
+const camera = new THREE.PerspectiveCamera(
+  72,
+  innerWidth/innerHeight,
+  0.05,
+  80
+);
+
+camera.position.set(0,1.7,13);
+
+const renderer = new THREE.WebGLRenderer({
+ antialias:false,
+ powerPreference:"high-performance"
+});
+
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
+renderer.shadowMap.enabled=false;
+document.body.appendChild(renderer.domElement);
+
+
+/* =========================================================
+   LICHT
+========================================================= */
+
+scene.add(new THREE.HemisphereLight(
+  0x778899,
+  0x111111,
+  1.0
+));
+
+function light(x,y,z,intensity=1){
+ const l=new THREE.PointLight(0xd7e0ff,intensity,13);
+ l.position.set(x,y,z);
+ scene.add(l);
+}
+
+light(0,3,9,1.3);
+light(0,3,1,1.0);
+light(0,3,-8,1.3);
+light(-7,3,-8,0.7);
+light(7,3,-8,0.7);
+
+
+/* =========================================================
+   MATERIALIEN
+========================================================= */
+
+const MAT={
+ floor:new THREE.MeshLambertMaterial({color:0x28292a}),
+ wall:new THREE.MeshLambertMaterial({color:0x55575a}),
+ ceiling:new THREE.MeshLambertMaterial({color:0x252627}),
+ metal:new THREE.MeshLambertMaterial({color:0x687078}),
+ darkMetal:new THREE.MeshLambertMaterial({color:0x353b40}),
+ black:new THREE.MeshLambertMaterial({color:0x111111}),
+ white:new THREE.MeshLambertMaterial({color:0xd0d0d0}),
+ skin:new THREE.MeshLambertMaterial({color:0xc7a68e}),
+ clothes:new THREE.MeshLambertMaterial({color:0x252b34}),
+ red:new THREE.MeshBasicMaterial({color:0xff0000}),
+ wood:new THREE.MeshLambertMaterial({color:0x573b27})
+};
+
+const boxGeoCache={};
+
+function box(w,h,d,mat){
+ const key=w+"_"+h+"_"+d;
+ if(!boxGeoCache[key])
+   boxGeoCache[key]=new THREE.BoxGeometry(w,h,d);
+
+ const m=new THREE.Mesh(boxGeoCache[key],mat);
+ m.castShadow=false;
+ m.receiveShadow=false;
+ return m;
+}
+
+
+/* =========================================================
+   RÄUME
+========================================================= */
+
+function floor(x,z,w,d){
+ const m=box(w,.25,d,MAT.floor);
+ m.position.set(x,-.125,z);
+ scene.add(m);
+}
+
+function wall(x,y,z,w,h,d){
+ const m=box(w,h,d,MAT.wall);
+ m.position.set(x,y,z);
+ scene.add(m);
+}
+
+/*
+ Raum 1:
+ x = -11 bis 1
+ z = 5 bis -7
+
+ Gang:
+ x = -1 bis 5
+
+ Raum 2:
+ x = 5 bis 17
+*/
+
+floor(-5,0,12,16);
+floor(11,0,12,16);
+floor(3,0,4,4);
+
+const H=5;
+
+/* Raum 1 */
+wall(-11,H/2,0,.3,H,16);
+wall(1,H/2,-5.8,.3,H,4.4);
+wall(1,H/2,5.8,.3,H,4.4);
+wall(-5,H/2,8,12,H,.3);
+wall(-5,H/2,-8,12,H,.3);
+
+/* Raum 2 */
+wall(17,H/2,0,.3,H,16);
+wall(11,H/2,8,12,H,.3);
+wall(11,H/2,-8,12,H,.3);
+wall(17,H/2,-5.8,.3,H,4.4);
+wall(17,H/2,5.8,.3,H,4.4);
+
+/* Gang */
+wall(-1,H/2,7.9,4,H,.3);
+wall(-1,H/2,-7.9,4,H,.3);
+
+
+/* =========================================================
+   DECKEN
+========================================================= */
+
+const ceiling1=box(12,.2,16,MAT.ceiling);
+ceiling1.position.set(-5,5,0);
+scene.add(ceiling1);
+
+const ceiling2=box(12,.2,16,MAT.ceiling);
+ceiling2.position.set(11,5,0);
+scene.add(ceiling2);
+
+const ceiling3=box(4,.2,16,MAT.ceiling);
+ceiling3.position.set(3,5,0);
+scene.add(ceiling3);
+
+
+/* =========================================================
+   KÜHLSCHRÄNKE
+========================================================= */
+
+const fridges=[];
+const fridgeDoors=[];
+
+function createFridge(x,z,id){
+
+ const group=new THREE.Group();
+ group.position.set(x,0,z);
+
+ const body=box(1.8,3.6,.75,MAT.darkMetal);
+ body.position.y=1.8;
+ group.add(body);
+
+ const doorGroup=new THREE.Group();
+ doorGroup.position.set(0,1.8,.41);
+
+ const door=box(1.65,3.35,.12,MAT.metal);
+ door.position.x=0;
+ doorGroup.add(door);
+
+ const handle=box(.10,2.5,.10,MAT.black);
+ handle.position.set(.63,0,.10);
+ doorGroup.add(handle);
+
+ const edge=box(1.7,.06,.13,MAT.black);
+ edge.position.y=1.62;
+ doorGroup.add(edge);
+
+ group.add(doorGroup);
+
+ scene.add(group);
+
+ const fridge={
+   id:id,
+   group:group,
+   door:doorGroup,
+   open:false,
+   opening:false,
+   progress:0
+ };
+
+ fridges.push(fridge);
+ fridgeDoors.push(doorGroup);
+ return fridge;
+}
+
+/* An der linken Wand */
+for(let i=0;i<5;i++){
+ createFridge(-9.75,5.4-i*2.7,i);
+}
+
+
+/* =========================================================
+   BLOCK-LEICHEN
+========================================================= */
+
+function createBody(z){
+
+ const g=new THREE.Group();
+
+ /* Körper */
+ const body=box(.72,.95,.42,MAT.clothes);
+ body.position.y=.85;
+ g.add(body);
+
+ /* Kopf */
+ const head=box(.5,.5,.5,MAT.skin);
+ head.position.y=1.58;
+ g.add(head);
+
+ /* Arme */
+ const arm1=box(.22,.85,.22,MAT.clothes);
+ arm1.position.set(-.48,.92,0);
+ g.add(arm1);
+
+ const arm2=box(.22,.85,.22,MAT.clothes);
+ arm2.position.set(.48,.92,0);
+ g.add(arm2);
+
+ /* Beine */
+ const leg1=box(.28,.9,.28,MAT.clothes);
+ leg1.position.set(-.22,.12,0);
+ g.add(leg1);
+
+ const leg2=box(.28,.9,.28,MAT.clothes);
+ leg2.position.set(.22,.12,0);
+ g.add(leg2);
+
+ /* Liege */
+ const bed=box(1.55,.15,3.0,MAT.metal);
+ bed.position.set(0,-.1,0);
+ g.add(bed);
+
+ /* Körper quer auf Liege */
+ g.position.set(-5.1,.15,z);
+
+ scene.add(g);
+
+ return {
+   group:g,
+   taken:false,
+   onTable:false
+ };
+}
+
+const bodies=[];
+
+for(let i=0;i<5;i++){
+ bodies.push(createBody(5.4-i*2.7));
+}
+
+
+/* =========================================================
+   TISCH
+========================================================= */
+
+function createPushTable(){
+
+ const g=new THREE.Group();
+
+ const top=box(2.5,.22,4.3,MAT.metal);
+ top.position.y=1.0;
+ g.add(top);
+
+ const frame=box(2.2,.18,4.0,MAT.darkMetal);
+ frame.position.y=.78;
+ g.add(frame);
+
+ const legs=[
+  [-.95,.45,-1.65],
+  [.95,.45,-1.65],
+  [-.95,.45,1.65],
+  [.95,.45,1.65]
+ ];
+
+ for(const p of legs){
+  const l=box(.18,.9,.18,MAT.darkMetal);
+  l.position.set(...p);
+  g.add(l);
+ }
+
+ /* Rollen */
+ for(const p of legs){
+  const wheel=box(.32,.16,.32,MAT.black);
+  wheel.position.set(p[0],.03,p[2]);
+  g.add(wheel);
+ }
+
+ g.position.set(-5,0,2);
+
+ scene.add(g);
+
+ return {
+  group:g,
+  hasBody:null,
+  active:false
+ };
+}
+
+const pushTable=createPushTable();
+
+
+/* =========================================================
+   GROSSER TISCH IM RAUM 2
+========================================================= */
+
+const bigTable=box(4,.45,4,MAT.wood);
+bigTable.position.set(11,1,0);
+scene.add(bigTable);
+
+const bigLegs=[
+ [-1.5,.45,-1.5],
+ [1.5,.45,-1.5],
+ [-1.5,.45,1.5],
+ [1.5,.45,1.5]
+];
+
+for(const p of bigLegs){
+ const l=box(.35,1.0,.35,MAT.darkMetal);
+ l.position.set(11+p[0],.45,p[2]);
+ scene.add(l);
+}
+
+
+/* =========================================================
+   TÜR-ANIMATION
+========================================================= */
+
+function updateDoor(fridge,amount){
+
+ fridge.door.rotation.y=-amount*1.35;
+
+ /* Körper hinter Tür sichtbar */
+}
+
+function openFridge(fridge){
+
+ if(fridge.open || fridge.opening)return;
+
+ fridge.opening=true;
+
+ const start=performance.now();
+ const duration=650;
+
+ function anim(now){
+
+  let p=Math.min((now-start)/duration,1);
+  p=1-Math.pow(1-p,3);
+
+  updateDoor(fridge,p);
+
+  if(p<1){
+   requestAnimationFrame(anim);
+  }else{
+   fridge.open=true;
+   fridge.opening=false;
+  }
+ }
+
+ requestAnimationFrame(anim);
+}
+
+
+/* =========================================================
+   ROTE UMRAHMUNG
+========================================================= */
+
+let outline=null;
+
+function removeOutline(){
+ if(outline){
+   scene.remove(outline);
+   outline=null;
+ }
+}
+
+function createOutline(obj){
+
+ removeOutline();
+
+ const geo=obj.geometry;
+ const edges=new THREE.EdgesGeometry(geo);
+
+ outline=new THREE.LineSegments(
+   edges,
+   new THREE.LineBasicMaterial({
+     color:0xff0000,
+     depthTest:false
+   })
+ );
+
+ outline.scale.set(1.02,1.02,1.02);
+ obj.add(outline);
+}
+
+
+/* =========================================================
+   INPUT
+========================================================= */
+
+const keys={};
+let locked=false;
+
+document.addEventListener("keydown",e=>{
+ keys[e.code]=true;
+
+ if(e.code==="KeyE"){
+   e.preventDefault();
+ }
+});
+
+document.addEventListener("keyup",e=>{
+ keys[e.code]=false;
+});
+
+
+let yaw=0;
+let pitch=0;
+
+document.addEventListener("mousemove",e=>{
+ if(!locked)return;
+
+ yaw-=e.movementX*.0022;
+ pitch-=e.movementY*.0022;
+
+ pitch=Math.max(-1.45,Math.min(1.45,pitch));
+});
+
+
+/* =========================================================
+   START
+========================================================= */
+
+const start=document.getElementById("start");
+
+start.addEventListener("click",()=>{
+ start.style.display="none";
+ renderer.domElement.requestPointerLock();
+});
+
+document.addEventListener("pointerlockchange",()=>{
+ locked=document.pointerLockElement===renderer.domElement;
+});
+
+
+/* =========================================================
+   TOUCH / CHROMEBOOK
+========================================================= */
+
+renderer.domElement.addEventListener("click",()=>{
+ if(!locked){
+  renderer.domElement.requestPointerLock();
+ }
+});
+
+
+/* =========================================================
+   RAYCASTER
+========================================================= */
+
+const raycaster=new THREE.Raycaster();
+
+function getTarget(){
+
+ raycaster.setFromCamera(
+   new THREE.Vector2(0,0),
+   camera
+ );
+
+ const objects=[];
+
+ scene.traverse(o=>{
+   if(o.isMesh && o.visible)
+     objects.push(o);
+ });
+
+ const hits=raycaster.intersectObjects(objects,true);
+
+ for(const h of hits){
+
+   let o=h.object;
+
+   while(o.parent){
+
+     if(fridges.some(f=>f.group===o))
+       return {type:"fridge",obj:o};
+
+     if(bodies.some(b=>b.group===o))
+       return {type:"body",obj:o};
+
+     if(o===pushTable.group)
+       return {type:"pushTable",obj:o};
+
+     if(o===bigTable)
+       return {type:"bigTable",obj:o};
+
+     o=o.parent;
+   }
+ }
+
+ return null;
+}
+
+
+/* =========================================================
+   FINDEN DER FRIDGE / BODY
+========================================================= */
+
+function fridgeFromObject(o){
+ return fridges.find(f=>{
+   let p=o;
+   while(p){
+     if(p===f.group)return f;
+     p=p.parent;
+   }
+   return null;
+ });
+}
+
+function bodyFromObject(o){
+ return bodies.find(b=>{
+   let p=o;
+   while(p){
+     if(p===b.group)return b;
+     p=p.parent;
+   }
+   return null;
+ });
+}
+
+
+/* =========================================================
+   INTERAKTION
+========================================================= */
+
+const interact=document.getElementById("interact");
+const progress=document.getElementById("progress");
+const fill=document.querySelector("#progress .fill");
+const progressText=document.querySelector("#progress span");
+
+let activeTarget=null;
+let holdStart=0;
+let holding=false;
+
+const HOLD_TIME=1300;
+
+function showProgress(percent){
+
+ progress.style.display="block";
+
+ const deg=percent*360;
+
+ fill.style.background=
+   `conic-gradient(red ${deg}deg,transparent ${deg}deg)`;
+
+ progressText.textContent=Math.floor(percent*100)+"%";
+}
+
+function hideProgress(){
+ progress.style.display="none";
+}
+
+function beginInteraction(){
+
+ if(!activeTarget)return;
+
+ if(!holding){
+   holding=true;
+   holdStart=performance.now();
+ }
+}
+
+function cancelInteraction(){
+ holding=false;
+ hideProgress();
+}
+
+function finishInteraction(){
+
+ holding=false;
+ hideProgress();
+
+ if(!activeTarget)return;
+
+ if(activeTarget.type==="fridge"){
+
+   const f=fridgeFromObject(activeTarget.obj);
+
+   if(f){
+     openFridge(f);
+   }
+ }
+
+ else if(activeTarget.type==="body"){
+
+   const b=bodyFromObject(activeTarget.obj);
+
+   if(b && !b.taken){
+
+     b.taken=true;
+
+     /* direkt aufnehmen */
+     camera.userData.carryBody=b;
+
+     b.group.position.set(
+       camera.position.x,
+       camera.position.y-1.0,
+       camera.position.z-1.0
+     );
+
+     b.group.rotation.set(0,yaw,0);
+
+     if(pushTable.hasBody===b)
+       pushTable.hasBody=null;
+   }
+ }
+
+ else if(activeTarget.type==="pushTable"){
+
+   if(pushTable.hasBody){
+     pushTable.active=true;
+   }
+ }
+
+ else if(activeTarget.type==="bigTable"){
+
+   const b=camera.userData.carryBody;
+
+   if(b){
+
+     b.onTable=true;
+     b.taken=false;
+     camera.userData.carryBody=null;
+
+     b.group.position.set(
+       bigTable.position.x,
+       1.35,
+       bigTable.position.z
+     );
+
+     b.group.rotation.set(0,0,0);
+   }
+ }
+}
+
+
+/* =========================================================
+   E HALTEN
+========================================================= */
+
+function processInteraction(){
+
+ if(!keys.KeyE){
+
+   if(holding){
+     cancelInteraction();
+   }
+
+   return;
+ }
+
+ if(!activeTarget)return;
+
+ if(!holding){
+   beginInteraction();
+ }
+
+ const elapsed=performance.now()-holdStart;
+ const percent=Math.min(elapsed/HOLD_TIME,1);
+
+ showProgress(percent);
+
+ if(percent>=1){
+   finishInteraction();
+ }
+}
+
+
+/* =========================================================
+   OBJEKT-ANZEIGE
+========================================================= */
+
+function updateTarget(){
+
+ const target=getTarget();
+
+ removeOutline();
+
+ activeTarget=null;
+ interact.style.display="none";
+
+ if(!target)return;
+
+ activeTarget=target;
+
+ if(target.type==="fridge"){
+
+   const f=fridgeFromObject(target.obj);
+
+   if(f && !f.open){
+     interact.textContent="E halten · Kühlschrank öffnen";
+     interact.style.display="block";
+     createOutline(target.obj);
+   }
+ }
+
+ else if(target.type==="body"){
+
+   const b=bodyFromObject(target.obj);
+
+   if(b && !b.taken){
+
+     interact.textContent="E halten · Leiche nehmen";
+     interact.style.display="block";
+     createOutline(target.obj);
+   }
+ }
+
+ else if(target.type==="pushTable"){
+
+   interact.textContent="E halten · Tisch bewegen";
+   interact.style.display="block";
+   createOutline(target.obj);
+ }
+
+ else if(target.type==="bigTable"){
+
+   if(camera.userData.carryBody){
+
+     interact.textContent="E halten · Leiche ablegen";
+     interact.style.display="block";
+     createOutline(target.obj);
+   }
+ }
+}
+
+
+/* =========================================================
+   SPIELER
+========================================================= */
+
+const velocity=new THREE.Vector3();
+const direction=new THREE.Vector3();
+
+function updatePlayer(dt){
+
+ direction.set(0,0,0);
+
+ if(keys.KeyW)direction.z-=1;
+ if(keys.KeyS)direction.z+=1;
+ if(keys.KeyA)direction.x-=1;
+ if(keys.KeyD)direction.x+=1;
+
+ if(direction.length()>0)
+   direction.normalize();
+
+ const speed=3.2;
+
+ const sin=Math.sin(yaw);
+ const cos=Math.cos(yaw);
+
+ const dx=direction.x*cos-direction.z*sin;
+ const dz=direction.x*sin+direction.z*cos;
+
+ camera.position.x+=dx*speed*dt;
+ camera.position.z+=dz*speed*dt;
+
+ /* Raumgrenzen grob begrenzen */
+ camera.position.x=Math.max(-10.4,Math.min(16.4,camera.position.x));
+ camera.position.z=Math.max(-7.2,Math.min(7.2,camera.position.z));
+
+ /* Kamera */
+ camera.rotation.order="YXZ";
+ camera.rotation.y=yaw;
+ camera.rotation.x=pitch;
+ camera.position.y=1.7;
+}
+
+
+/* =========================================================
+   TISCH SCHIEBEN
+========================================================= */
+
+function updatePushTable(dt){
+
+ if(!pushTable.active)return;
+
+ if(!pushTable.hasBody){
+
+   pushTable.active=false;
+   return;
+ }
+
+ let dx=0,dz=0;
+
+ if(keys.KeyW)dz=-1;
+ if(keys.KeyS)dz=1;
+ if(keys.KeyA)dx=-1;
+ if(keys.KeyD)dx=1;
+
+ if(dx||dz){
+
+   const sin=Math.sin(yaw);
+   const cos=Math.cos(yaw);
+
+   const mx=dx*cos-dz*sin;
+   const mz=dx*sin+dz*cos;
+
+   pushTable.group.position.x+=mx*dt*2;
+   pushTable.group.position.z+=mz*dt*2;
+
+   pushTable.group.position.x=
+     Math.max(-9,Math.min(15,pushTable.group.position.x));
+
+   pushTable.group.position.z=
+     Math.max(-6.5,Math.min(6.5,pushTable.group.position.z));
+
+   const b=pushTable.hasBody;
+
+   if(b){
+     b.group.position.set(
+       pushTable.group.position.x,
+       1.25,
+       pushTable.group.position.z
+     );
+     b.group.rotation.set(0,0,0);
+   }
+ }
+}
+
+
+/* =========================================================
+   GETRAGENE LEICHE
+========================================================= */
+
+function updateCarriedBody(){
+
+ const b=camera.userData.carryBody;
+
+ if(!b)return;
+
+ const forward=new THREE.Vector3(
+   -Math.sin(yaw),
+   0,
+   -Math.cos(yaw)
+ );
+
+ b.group.position.copy(
+   camera.position
+ ).add(
+   forward.multiplyScalar(1.25)
+ );
+
+ b.group.position.y=1.0;
+ b.group.rotation.set(0,yaw,0);
+}
+
+
+/* =========================================================
+   LEICHE AUF TISCH
+========================================================= */
+
+function checkBigTable(){
+
+ const b=camera.userData.carryBody;
+
+ if(!b)return;
+
+ const dist=Math.hypot(
+   camera.position.x-bigTable.position.x,
+   camera.position.z-bigTable.position.z
+ );
+
+ if(dist<3){
+
+   /* kein automatisches Ablegen,
+      E erforderlich */
+ }
+}
+
+
+/* =========================================================
+   AUTOMATISCH: LEICHE AUF PUSH-TISCH
+========================================================= */
+
+function checkPushTable(){
+
+ const b=camera.userData.carryBody;
+
+ if(!b)return;
+
+ const dist=Math.hypot(
+   camera.position.x-pushTable.group.position.x,
+   camera.position.z-pushTable.group.position.z
+ );
+
+ if(dist<2.0){
+
+   /* E legt sie auf den Schiebetisch */
+   if(keys.KeyE && !holding){
+
+     pushTable.hasBody=b;
+     camera.userData.carryBody=null;
+     b.group.position.set(
+       pushTable.group.position.x,
+       1.25,
+       pushTable.group.position.z
+     );
+   }
+ }
+}
+
+
+/* =========================================================
+   RENDER LOOP
+========================================================= */
+
+let last=performance.now();
+
+function animate(now){
+
+ requestAnimationFrame(animate);
+
+ const dt=Math.min((now-last)/1000,.05);
+ last=now;
+
+ updatePlayer(dt);
+ updatePushTable(dt);
+ updateCarriedBody();
+
+ checkPushTable();
+ checkBigTable();
+
+ updateTarget();
+ processInteraction();
+
+ renderer.render(scene,camera);
+}
+
+animate(performance.now());
+
+
+/* =========================================================
+   RESIZE
+========================================================= */
+
+addEventListener("resize",()=>{
+ camera.aspect=innerWidth/innerHeight;
+ camera.updateProjectionMatrix();
+ renderer.setSize(innerWidth,innerHeight);
+});
+
+
+/* =========================================================
+   STARTPOSITION
+========================================================= */
+
+camera.position.set(-5,1.7,7);
+
+</script>
+</body>
+</html>
